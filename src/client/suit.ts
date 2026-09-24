@@ -9,10 +9,13 @@
  *     外部写会被它改回去。衣装只管色相，明暗永远由 app 的外观设置驱动。
  *   · 偏好要能存。ui-theme 的偏好白名单只认 light/dark/system，
  *     自定义 id 存不进去，所以走本插件自有的设置命名空间。
+ *
+ * 持久化通道本身是两代的（见 settings-channel.ts）：这里只认一条通道面，
+ * 由 index.tsx 把旧线 settingsScope 或新线 configForms 接进来。
  */
-import type { SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
-import { DEFAULT_SKIN, DEFAULT_SUIT, SUIT_FIELD, isSkin, type JoiSettings, type Skin, type Suit } from '../contract.ts'
+import { DEFAULT_SKIN, DEFAULT_SUIT, SUIT_FIELD, isSkin, type Skin, type Suit } from '../contract.ts'
 import { tokensFor, type TokenOverrides } from './tokens.ts'
+import { usable, type ChannelKind, type SuitChannel } from './settings-channel.ts'
 
 /** 挂载/卸载一层 token 覆盖的最小面，便于测试替身。 */
 export interface TokenLayerHost {
@@ -31,16 +34,20 @@ const LAYER = 'dsh-joi-channel-theme'
 /**
  * 本地兜底存放键。
  *
- * 为什么需要兜底：宿主 apiproxy 里有一份硬编码的命名空间白名单
- * （WEB_SETTINGS_NAMESPACES / PRODUCT_SETTINGS_NAMESPACES），`settings.describe`
- * 只把名单内的段发给浏览器。源码注释写得很明白——「settings 接缝保持通用；
- * 未来的注册不会默认变成远端可读写」。也就是说第三方插件的设置段**按设计**
- * 到不了浏览器：宿主侧 register 成功，浏览器侧拿到的却是 unavailable。
+ * 为什么需要兜底，两代的理由不同、结果一样：
  *
- * 于是走两级：官方通道优先（名单若将来放开，或本插件被收编，就自动用上），
- * 拿不到就落 localStorage。localStorage 同样满足「过刷新与重启仍在」，
- * 代价是它绑在浏览器 origin 上，不进 $DSH_HOME/settings.yaml，
- * 换浏览器或换机器不跟随——这条限制照实记在 README 的已知限制里。
+ *   · 旧线（0.1.0-rc.5 ～ 0.1.2-alpha）：宿主 apiproxy 里有一份硬编码的命名空间
+ *     白名单（WEB_SETTINGS_NAMESPACES / PRODUCT_SETTINGS_NAMESPACES），
+ *     `settings.describe` 只把名单内的段发给浏览器。源码注释写得很明白——
+ *     「settings 接缝保持通用；未来的注册不会默认变成远端可读写」。第三方插件的
+ *     设置段**按设计**到不了浏览器：宿主侧 register 成功，浏览器侧拿到 unavailable。
+ *   · 0.1.7-rc.1 起：白名单没了，命名空间就是 Loader 行的 entry id，本插件终于
+ *     能经 describe/update 落到 profile patch；但远端浏览器（非 loopback）那条
+ *     连接仍是 memory 模式，写会被拒；组合里也未必有 ui-settings。
+ *
+ * 所以始终两级：官方通道可用时走它（并落 profile），否则落 localStorage。
+ * localStorage 同样满足「过刷新与重启仍在」，代价是它绑在浏览器 origin 上，
+ * 换浏览器或换机器不跟随。
  */
 const LOCAL_KEY = 'dsh-joi-channel-theme.suit'
 
@@ -60,15 +67,18 @@ export class SuitRuntime {
   private lastSuit: Suit = DEFAULT_SUIT
 
   private readonly host: TokenLayerHost
-  private readonly scope: SettingsScope<JoiSettings> | undefined
+  /** 当前的设置通道。两代宿主各给一条，先到者被后到者顶掉。 */
+  private channel: SuitChannel | undefined
+  /** 通道来自哪一代；只进排障读数，不参与行为。 */
+  private channelKind: ChannelKind | 'none' = 'none'
+  /** 通道订阅的退订函数。 */
+  private unsubscribe: (() => void) | undefined
 
   /**
    * @param host - token 覆盖宿主（生产环境是 ctx.theme）。
-   * @param scope - 本插件自有设置命名空间的句柄；不可用时退化为进程内偏好。
    */
-  constructor(host: TokenLayerHost, scope: SettingsScope<JoiSettings> | undefined) {
+  constructor(host: TokenLayerHost) {
     this.host = host
-    this.scope = scope
   }
 
   /** @returns 当前皮肤（含 native）。 */
@@ -100,16 +110,58 @@ export class SuitRuntime {
   /**
    * @returns 持久化通道的实况。`unavailable` / `memory` 表示这台机器上
    *          衣装偏好只在进程内有效——这是降级而不是故障，但必须能看见，
-   *          否则「选了却没记住」会被当成随机 bug 反复排查。
+   *          否则「选了却没记住」会被当成随机 bug 反复排查。`kind` 指出
+   *          这条通道来自哪一代宿主。
    */
-  get persistence(): { channel: string, hostStatus: string, stored: unknown } {
-    const snap = this.scope?.getSnapshot()
+  get persistence(): { channel: string, hostStatus: string, kind: ChannelKind | 'none', stored: unknown } {
+    const snap = this.channel?.getSnapshot()
     return {
-      // 实际生效的通道：host = 官方设置文档；local = localStorage 兜底。
-      channel: snap?.status === 'ready' ? 'host' : 'local',
+      // 实际生效的通道：host = 宿主设置文档（0.1.7 起落 profile patch）；local = localStorage 兜底。
+      channel: snap !== undefined && usable(snap) ? 'host' : 'local',
       hostStatus: snap?.status ?? 'unbound',
+      kind: this.channelKind,
       stored: this.read(),
     }
+  }
+
+  /**
+   * 挂上一条设置通道。
+   *
+   * 采纳与订阅的顺序是硬的：先读现值再订阅。反过来的话，注册到订阅之间到达的
+   * 变更没有第二次机会——那正是「别的窗口改了设置，这个窗口不动」的成因。
+   * @param channel - 通道（旧线 SettingsScope 或新线 ConfigForm）。
+   * @param kind - 通道来自哪一代。
+   * @returns 卸下这条通道的 disposer，可直接交给 ctx.effect。
+   */
+  attach(channel: SuitChannel, kind: ChannelKind): () => void {
+    this.detachChannel()
+    this.channel = channel
+    this.channelKind = kind
+    const adopt = (): void => {
+      const stored = this.readChannel()
+      // 回读不写回：否则两个窗口会互相顶，谁也不让谁。
+      if (stored !== undefined && stored !== this.current) this.setSuit(stored, false)
+    }
+    adopt()
+    this.unsubscribe = channel.subscribe(adopt)
+    return () => { this.detachChannel() }
+  }
+
+  /** 卸下当前通道并清掉订阅。幂等（HMR 下会被重复调用）。 */
+  detachChannel(): void {
+    this.unsubscribe?.()
+    this.unsubscribe = undefined
+    this.channel = undefined
+    this.channelKind = 'none'
+  }
+
+  /**
+   * 从通道读衣装字段。
+   * @returns 通道里存着的衣装，没读到或值非法则 undefined。
+   */
+  private readChannel(): Skin | undefined {
+    const value = this.channel?.getSnapshot().value?.[SUIT_FIELD]
+    return isSkin(value) ? value : undefined
   }
 
   /**
@@ -117,8 +169,8 @@ export class SuitRuntime {
    * @returns 存着的衣装，没有则 undefined。
    */
   private read(): Skin | undefined {
-    const fromHost = this.scope?.getSnapshot().value?.[SUIT_FIELD]
-    if (isSkin(fromHost)) return fromHost
+    const fromHost = this.readChannel()
+    if (fromHost !== undefined) return fromHost
     try {
       const local = globalThis.localStorage?.getItem(LOCAL_KEY)
       if (isSkin(local)) return local
@@ -129,15 +181,16 @@ export class SuitRuntime {
   }
 
   /**
-   * 写入持久偏好。两条通道都尝试：官方通道若可用就走它，
+   * 写入持久偏好。两条通道都尝试：官方通道可用就走它，
    * 本地兜底无论如何都写——名单放开与否不该改变用户看到的行为。
    * @param suit - 要记住的衣装。
    */
   private write(suit: Skin): void {
     // 写失败不回滚界面：用户已经看见换装生效了，把它撤回去更费解。
     // 设置层自己有重试与回读恢复，这里只需要不让 rejection 逃逸。
-    if (this.scope?.getSnapshot().status === 'ready') {
-      void this.scope.set(SUIT_FIELD, suit).catch(() => {})
+    const channel = this.channel
+    if (channel !== undefined && usable(channel.getSnapshot())) {
+      void channel.set(SUIT_FIELD, suit).catch(() => {})
     }
     try {
       globalThis.localStorage?.setItem(LOCAL_KEY, suit)
@@ -189,10 +242,11 @@ export class SuitRuntime {
     return () => { this.listeners.delete(listener) }
   }
 
-  /** 卸载 token 层并清空订阅。disposer 幂等（HMR 下会被重复调用）。 */
+  /** 卸载 token 层与设置通道，并清空订阅。disposer 幂等（HMR 下会被重复调用）。 */
   dispose(): void {
     this.detach?.()
     this.detach = undefined
+    this.detachChannel()
     this.listeners.clear()
   }
 

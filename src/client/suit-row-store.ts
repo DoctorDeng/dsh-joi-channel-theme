@@ -4,7 +4,7 @@
  * 组件只经由 props.useStore 读，写入口只有插件 apply 里的那一处同步回调。
  * 这条单向性是 slot store 的约定，也是这里不直接把 SuitRuntime 传进组件的原因。
  */
-import type { EngineStoreHandle } from '@deepseek-ai/dsh-client-runtime/client'
+import type { EngineStoreHandle } from '@deepseek-ai/dsh-client-store'
 import { DEFAULT_SKIN, type Skin } from '../contract.ts'
 
 /** app 的内置明暗偏好。 */
@@ -24,15 +24,16 @@ type SuitRowActions = {
 }
 
 /**
- * alpha 兼容层：dsh 0.1.2-alpha 线把客户端运行时整体换成
- * `@deepseek-ai/dsh-client-modules` 的懒加载模块表，旧包
- * `@deepseek-ai/dsh-client-runtime` 已不在产物与模块表中——bundle 若仍
- * `require("@deepseek-ai/dsh-client-runtime/client")`，物化时会抛
- * 「client-modules: … missed the module table」让整个 boot/热载失败
- * （见 issue #4）。本包对 runtime 的唯一**值**依赖就是 defineStore，
- * 故按 rc.6 的 StoreHandle / StoreInstance 契约内联一个零依赖等价实现；
- * persist 路径本包未使用，仍按契约保留。类型导入（type-only）构建时擦除，
- * 不产生 require，可保留原样。
+ * 内联的 defineStore 兼容层。
+ *
+ * 契约的正本现在是 `@deepseek-ai/dsh-client-store`（`StoreHandle` /
+ * `EngineStoreInstance`，上面按类型导入，构建期擦除），但**值**不能从那里拿：
+ * 该包只在 0.1.7-rc.1 的模块表里，旧线（0.1.0-rc.5 ～ 0.1.2-alpha）的表里没有它，
+ * 而 0.1.2-alpha 线又把旧的 `@deepseek-ai/dsh-client-runtime` 整体删除 ——
+ * bundle 一旦 require 不在表里的模块，物化时会抛
+ * 「client-modules: … missed the module table」让整个 boot/热载失败（issue #4）。
+ * 所以按契约内联一份零依赖等价实现：两代都只 require react 与 ui-primitives。
+ * persist 路径本包未使用，仍按契约保留。
  */
 type ActionsDecl<S> = Record<string, (draft: S, ...params: any[]) => void>
 

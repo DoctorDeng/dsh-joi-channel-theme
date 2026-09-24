@@ -10,23 +10,31 @@
  *
  * 外部化名单只能是模块表里真有的那些。表里没有的 require 一定在运行时抛错，
  * 所以规则是「表内外部化，其余全部内联」——本包除 react 外无运行时依赖，
- * 跨插件协作一律走 cordis 服务（ctx.theme / ctx.slots / ctx.settingsScope）。
+ * 跨插件协作一律走 cordis 服务（ctx.theme / ctx.slots / ctx.configForms）。
  *
- * 0.1.12 起移除原「临时豁免」项 `@deepseek-ai/dsh-client-runtime/client`：
- * dsh 0.1.2-alpha 线已删除该包，模块表不再注册其工厂，require 必然
- * 「missed the module table」。defineStore 已内联进 src/client/suit-row-store.ts
- * （见 issue #4），本名单不再需要它。
+ * 0.1.7-rc.1 起这份名单收成**两代模块表的交集**，因为同一个 bundle 要同时活在
+ * 高低两代上（表本身随宿主走，见 dsh-client-modules 的 PLATFORM_MODULES）：
+ *
+ *   0.1.7-rc.1  react react/jsx-runtime react-dom react-dom/client cordis
+ *               dsh-client-store ui-slots ui-primitives ui-dockkit
+ *   旧线        本文件此前记录的那份名单：同名基座 + dsh-client-web-react /
+ *               ui-attachment / dsh-client-schema-form，且没有 dsh-client-store
+ *               与 ui-dockkit
+ *
+ * 表里多列的条目不影响产物（没 import 就没有 require）；真正要守的是
+ * 「本包 import 的每个模块，两代表里都在」。目前实际只用到 react、
+ * react/jsx-runtime 与 ui-primitives——三者两代都在，这也是本插件敢用一份
+ * 产物同时供两代宿主的原因。需要 dsh-client-store 的 defineStore 之类时不能
+ * 直接外部化：它在旧线是否在表里没有把握，而内联在两代上都安全
+ * （见 src/client/suit-row-store.ts）。
  */
 import type { UserConfig } from 'tsdown'
 
-/** dsh 浏览器模块表里的平台模块，与 packages/client/web/src/platform.ts 对齐。 */
+/** 两代客户端模块表的交集。与 packages/client/web/src/platform.ts 对齐。 */
 const PLATFORM_MODULES = [
   'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-ui-slots',
-  '@deepseek-ai/dsh-client-web-react',
   '@deepseek-ai/dsh-client-ui-primitives',
-  '@deepseek-ai/dsh-client-ui-attachment',
-  '@deepseek-ai/dsh-client-schema-form',
 ]
 
 const ID = 'dsh-joi-channel-theme'

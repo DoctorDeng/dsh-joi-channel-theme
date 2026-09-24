@@ -21,9 +21,7 @@
  * 手写数值还有个更要命的问题：它不跟着宿主走，app 改了行规范这里不会知道。
  */
 import { useState } from 'react'
-import {
-  IconDarkOutline16, IconFollowsystemOutline16, IconLightOutline16,
-} from '@deepseek-ai/dsh-client-ui-primitives'
+import * as primitives from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
 import { PALETTE } from '../generated/baseline.ts'
 import { SKINS, type Skin } from '../contract.ts'
@@ -58,11 +56,37 @@ const SKIN_CARDS: Record<Skin, { name: string, tag: string }> = {
   native: { name: 'DeepSeek 原生', tag: '不使用本主题 · 插件保持安装' },
 }
 
+/**
+ * 明暗三方块的图标形状：只约束到「可无参渲染」，不绑任何一代的导出名。
+ * ui-theme 的 AppearanceRow 也是这么渲染的（`<Icon />`）。
+ */
+type RowIcon = (props?: { size?: number }) => React.JSX.Element
+
+/**
+ * 取一个图标：按新版名字优先、旧版名字兜底。
+ *
+ * 0.1.7-rc.1 的 ui-primitives 把整套图标改名（`IconLightOutline16` →
+ * `IconLightOutlineMedium`，16 系列整体消失），旧线则只有 16 系列。两边都
+ * 只要求「名字在不在」，所以走命名空间查表而不是具名 import：具名 import
+ * 会在缺名字的那一代拿到 undefined 组件，渲染时抛 "Element type is invalid"，
+ * 整个 cell 崩溃并让位给内置外观行——主题看起来就是"没生效"。
+ * @param names - 候选导出名，按优先级排列。
+ * @returns 找到的第一个图标组件；都没有时返回不渲染的占位（行照常显示，只是缺图标）。
+ */
+function icon(...names: readonly string[]): RowIcon {
+  const table = primitives as unknown as Record<string, RowIcon | undefined>
+  for (const name of names) {
+    const found = table[name]
+    if (typeof found === 'function') return found
+  }
+  return () => <></>
+}
+
 /** 明暗三方块，与内置行同序同图标。 */
-const CUBES: ReadonlyArray<{ id: Preference, label: string, Icon: typeof IconLightOutline16 }> = [
-  { id: 'light', label: '浅色', Icon: IconLightOutline16 },
-  { id: 'dark', label: '深色', Icon: IconDarkOutline16 },
-  { id: 'system', label: '跟随系统', Icon: IconFollowsystemOutline16 },
+const CUBES: ReadonlyArray<{ id: Preference, label: string, Icon: RowIcon }> = [
+  { id: 'light', label: '浅色', Icon: icon('IconLightOutlineMedium', 'IconLightOutline16') },
+  { id: 'dark', label: '深色', Icon: icon('IconDarkOutlineMedium', 'IconDarkOutline16') },
+  { id: 'system', label: '跟随系统', Icon: icon('IconFollowsystemOutlineMedium', 'IconFollowsystemOutline16') },
 ]
 
 /**
