@@ -181,9 +181,17 @@ ${SELECTORS.brand} svg { overflow: visible !important; transform: translateX(-12
  */
 function textureRules(): string {
   return `
+/* !important 在这里不是保险，是必需。0.1.7-rc.1 起会话列的根节点
+   （ui-conversation 的 .wSkVaW_root）用 background 简写画 --dsw-alias-bg-base，
+   简写会把 background-image 整条重置成 none；它与 .joi-tex 特异度相同，
+   于是谁在文档里靠后谁赢。而 app 的样式表是它的 bundle 物化时才注入的
+   （实测：本插件的 style 在 head 第 21 位，ui-conversation 的在第 32 位），
+   顺序不归我们掌握。丢掉这条的现场就是「底色还在、斑点没了」——底色是
+   background-color，被简写保留；斑点是被简写重置掉的 background-image。
+   品牌区那条规则栽的是同一个坑，见上面 ③。 */
 .${TEX_CLASS} {
-  background-image: var(--joi-texture-image);
-  background-size: var(--joi-texture-size);
+  background-image: var(--joi-texture-image) !important;
+  background-size: var(--joi-texture-size) !important;
 }
 
 /* 轨迹页把 --dsw-alias-bg-layer-1 画成不透明底盖在上面，paintTexture 只认
